@@ -46,9 +46,9 @@ git clone https://github.com/your-username/ChatterboxPro.git
 cd ChatterboxPro
 ```
 
-### 2. Set Up the `chatterbox` Model
+### 2. Set Up the `chatterbox` Model (Optional, a default version was included)
 
-This GUI is a wrapper around the original **Chatterbox** model. You must download the source code of the model and place it correctly in the project directory.
+This GUI is a wrapper around the original **Chatterbox** model. You can download the latest source code of the model and place it correctly in the project directory.
 
 1.  Download the `chatterbox` source code from its original repository (e.g., as a ZIP file).
 2.  Extract the ZIP file.
@@ -84,7 +84,7 @@ venv\Scripts\activate
 source venv/bin/activate
 
 # Install the required Python packages
-pip install -r requirements_pro.txt
+pip install -r requirements.txt
 ```
 
 ### 4. Install Optional System Dependencies
