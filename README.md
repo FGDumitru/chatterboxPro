@@ -1,6 +1,9 @@
 # Chatterbox Pro Audiobook Generator
 
-
+<img src="images/Main.png" width="600">
+<img src="images/editor.png" width="600">
+<img src="images/finalize.png" width="600">
+<img src="images/generation.png" width="600">
 
 
 **Chatterbox Pro** is a powerful, user-friendly graphical interface for generating high-quality audiobooks using the cutting-edge **Chatterbox** text-to-speech model. This tool is designed for creators, authors, and hobbyists who want to convert long-form text into professional-sounding audio with a consistent, cloned voice.
