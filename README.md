@@ -2,6 +2,7 @@
 
 
 
+
 **Chatterbox Pro** is a powerful, user-friendly graphical interface for generating high-quality audiobooks using the cutting-edge **Chatterbox** text-to-speech model. This tool is designed for creators, authors, and hobbyists who want to convert long-form text into professional-sounding audio with a consistent, cloned voice.
 
 This application provides a complete end-to-end workflow: from text processing and voice cloning to multi-GPU audio generation and final audiobook assembly.
@@ -162,8 +163,6 @@ TLDR License info; If you are trying to sell the software you have to open sourc
 # Chatterbox Pro 🎙️
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-
-*(Your project description, features, installation instructions, etc., go here)*
 
 ---
 
