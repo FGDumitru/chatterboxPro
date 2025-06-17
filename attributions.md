@@ -11,7 +11,7 @@ This project has a direct lineage from the following repositories, which form it
 ### Chatterbox-TTS-Extended by petermg
 - **Repository:** https://github.com/petermg/Chatterbox-TTS-Extended
 - **License:** *MIT*
-- **Note:** The Chatterbox Pro project began as a fork of or was heavily based on this repository. While it has since evolved significantly with the addition of a graphical user interface and a different backend architecture, its origins are gratefully acknowledged and some of its original code lives on within this project.
+- **Note:** The Chatterbox Pro project began as a fork of or was heavily based on this repository. While it has since evolved significantly with the addition of a graphical user interface and a different backend architecture, its origins are gratefully acknowledged.
 
 ### Chatterbox by Resemble AI
 - **Repository:** https://github.com/resemble-ai/chatterbox
