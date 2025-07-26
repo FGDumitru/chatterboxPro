@@ -1,5 +1,6 @@
 # utils/text_processor.py
 import re
+import uuid
 from sentence_splitter import SentenceSplitter
 
 def punc_norm(text: str) -> str:
@@ -35,76 +36,154 @@ class TextPreprocessor:
     """Handles all text extraction and splitting logic."""
     def __init__(self):
         self.splitter = SentenceSplitter(language='en')
-        # NEW FEATURE: Regex to identify chapter headings
-        self.chapter_regex = re.compile(r'^\s*(chapter\s+\d+|prologue|epilogue)\s*$', re.IGNORECASE)
 
-    def group_sentences_into_chunks(self, sentences, max_chars=350):
+        # Regex for aggressive character cleaning. Whitelists common characters.
+        self.aggressive_clean_re = re.compile(r"[^a-zA-Z0-9\s'\",.?!-]")
+
+        # Define patterns for spelled-out numbers from one to ninety-nine
+        units = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+        teens = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+        tens = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+        tens_pattern = "|".join(tens)
+        units_pattern = "|".join(units)
+        compound_pattern = f"(?:{tens_pattern})(?:[\\s-]?(?:{units_pattern}))?"
+        number_words_pattern = f"(?:{compound_pattern}|{'|'.join(teens)}|{units_pattern})"
+
+        self.chapter_regex = re.compile(
+            rf'^\s*(chapter\s+([ivxlcdm]+|\d+|{number_words_pattern})|prologue|epilogue)',
+            re.IGNORECASE
+        )
+
+    def clean_text_aggressively(self, text: str) -> str:
+        """Removes characters not in a basic whitelist."""
+        return self.aggressive_clean_re.sub('', text)
+
+    def filter_non_english_words(self, text: str) -> str:
+        """
+        Removes words containing characters not typical in English.
+        This is a heuristic and may remove valid but unusual words/names.
+        It preserves sentence-ending punctuation.
+        """
+        words = text.split(' ')
+        # A word is kept if it's purely alphabetic, or contains apostrophes/hyphens surrounded by letters.
+        valid_word_re = re.compile(r"^[a-zA-Z]+(?:['-]?[a-zA-Z]+)*$")
+        
+        filtered_words = []
+        for word in words:
+            # Preserve punctuation by stripping it before checking, then re-adding it.
+            leading_punc = ''
+            trailing_punc = ''
+            
+            # Find leading non-alphanumeric characters
+            match_lead = re.match(r'^[^a-zA-Z]*', word)
+            if match_lead:
+                leading_punc = match_lead.group(0)
+            
+            # Find trailing non-alphanumeric characters
+            match_trail = re.search(r'[^a-zA-Z]*$', word)
+            if match_trail:
+                trailing_punc = match_trail.group(0)
+                
+            clean_word = word[len(leading_punc):len(word)-len(trailing_punc)]
+
+            if valid_word_re.match(clean_word) or clean_word == '':
+                filtered_words.append(word)
+        
+        return ' '.join(filtered_words)
+
+    def group_sentences_into_chunks(self, sentences, max_chars=290):
         """Groups individual sentences into larger chunks for TTS processing."""
-        chunks, current_chunk, is_first_in_chunk = [], "", True
+        chunks, current_chunk_items, current_chunk_text = [], [], ""
+        
+        def finalize_chunk(items):
+            if not items: return None
+            is_chapter = len(items) == 1 and items[0].get('is_chapter_heading', False)
+            final_text = " ".join(item['original_sentence'] for item in items)
+            
+            return {
+                "uuid": uuid.uuid4().hex,
+                "original_sentence": final_text, 
+                "paragraph": "no",
+                "tts_generated": "no", 
+                "marked": False,
+                "is_chapter_heading": is_chapter
+            }
+
         for sentence_data in sentences:
-            sentence = sentence_data['original_sentence']
-            # NEW FEATURE: Don't group chapter headings with other sentences
+            sentence_text = sentence_data['original_sentence']
+
             if sentence_data.get('is_chapter_heading'):
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                chunks.append(sentence)
-                current_chunk, is_first_in_chunk = "", True
+                if current_chunk_items:
+                    chunks.append(finalize_chunk(current_chunk_items))
+                chunks.append(sentence_data)
+                current_chunk_items, current_chunk_text = [], ""
                 continue
-
-            if len(sentence) >= max_chars:
-                if current_chunk:
-                    chunks.append(current_chunk.strip())
-                chunks.append(sentence)
-                current_chunk, is_first_in_chunk = "", True
+            
+            if len(sentence_text) >= max_chars:
+                if current_chunk_items:
+                    chunks.append(finalize_chunk(current_chunk_items))
+                chunks.append(sentence_data)
+                current_chunk_items, current_chunk_text = [], ""
                 continue
-
-            if len(current_chunk) + len(sentence) + (0 if is_first_in_chunk else 1) > max_chars:
-                chunks.append(current_chunk.strip())
-                current_chunk, is_first_in_chunk = sentence, False
+            
+            if len(current_chunk_text) + len(sentence_text) + (1 if current_chunk_text else 0) > max_chars:
+                if current_chunk_items:
+                    chunks.append(finalize_chunk(current_chunk_items))
+                current_chunk_items = [sentence_data]
+                current_chunk_text = sentence_text
             else:
-                if not is_first_in_chunk:
-                    current_chunk += " "
-                current_chunk += sentence
-                is_first_in_chunk = False
+                current_chunk_items.append(sentence_data)
+                current_chunk_text += (" " if current_chunk_text else "") + sentence_text
+        
+        if current_chunk_items:
+            chunks.append(finalize_chunk(current_chunk_items))
+            
+        for i, chunk in enumerate(chunks):
+            chunk['sentence_number'] = str(i + 1)
+        
+        return chunks
 
-        if current_chunk:
-            chunks.append(current_chunk.strip())
-
-        return [{"sentence_number": str(i + 1), "original_sentence": chunk_text, "paragraph": "no", "tts_generated": "no", "marked": False} for i, chunk_text in enumerate(chunks)]
-
-    def preprocess_text(self, text, is_edited_text=False):
+    def preprocess_text(self, text, is_edited_text=False, aggressive_clean=False):
         """Splits raw text into sentences and identifies paragraph breaks."""
+        if aggressive_clean:
+            text = self.clean_text_aggressively(text)
+        
         text = re.sub(r'\r\n?', '\n', text)
         text = re.sub(r'\t', ' ', text)
 
         if is_edited_text:
-            paragraph_breaks = list(re.finditer(r'\n', text))
+            paragraph_break_positions = {m.start() for m in re.finditer(r'\n', text)}
         else:
-            text = re.sub(r'\n{2,}', '[[PARAGRAPH]]', text)
+            text_with_marker = re.sub(r'\n{2,}', '[[PARAGRAPH]]', text)
+            paragraph_break_positions = {m.start() for m in re.finditer(r'\[\[PARAGRAPH\]\]', text_with_marker)}
             text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
             text = text.replace('[[PARAGRAPH]]', '\n')
-            paragraph_breaks = list(re.finditer(r'\n', text))
 
         sentences = self.splitter.split(text)
-        processed_sentences, char_offset = [], 0
+        processed_sentences = []
+        char_offset = 0
+        
         for i, sentence_text in enumerate(sentences):
-            if not sentence_text.strip():
+            clean_sentence = sentence_text.strip()
+            if not clean_sentence:
                 char_offset += len(sentence_text)
                 continue
 
-            is_chapter_heading = bool(self.chapter_regex.match(sentence_text.strip()))
+            is_chapter_heading = bool(self.chapter_regex.match(clean_sentence))
 
             try:
-                sentence_start = text.index(sentence_text, char_offset)
-                sentence_end = sentence_start + len(sentence_text)
-                is_paragraph = any(match.start() >= sentence_start and match.start() <= sentence_end for match in paragraph_breaks)
-                char_offset = sentence_end
+                sentence_start_pos = text.index(sentence_text, char_offset)
+                is_paragraph = any(p_pos >= sentence_start_pos and p_pos < (sentence_start_pos + len(sentence_text)) for p_pos in paragraph_break_positions)
+                char_offset = sentence_start_pos + len(sentence_text)
             except ValueError:
-                is_paragraph, char_offset = False, char_offset + len(sentence_text)
+                is_paragraph = False
+                char_offset += len(sentence_text)
 
             processed_sentences.append({
-                "sentence_number": str(i + 1), "original_sentence": sentence_text.strip(),
+                "uuid": uuid.uuid4().hex,
+                "sentence_number": str(i + 1), "original_sentence": clean_sentence,
                 "paragraph": "yes" if is_paragraph else "no", "tts_generated": "no", "marked": False,
-                "is_chapter_heading": is_chapter_heading # NEW FEATURE
+                "is_chapter_heading": is_chapter_heading
             })
+            
         return processed_sentences

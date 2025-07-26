@@ -1,40 +1,48 @@
-# =================================================================
-# Requirements for Chatterbox Pro
-# To install, use: pip install -r requirements.txt
-# =================================================================
-
-# --- Core ML & Audio Libraries ---
-# Pinned to specific versions for model stability.
-# The full URL ensures the correct CUDA version is downloaded.
+=================================================================
+Requirements for Chatterbox Pro (Updated)
+To install, use: pip install -r requirements_pro.txt
+=================================================================
+--- Core PyTorch Libraries ---
+The extra index URL helps pip find the correct PyTorch version for your system (CPU or specific CUDA).
+We list the versions without the specific build string (e.g., +cu121) to make it more portable.
 --extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.7.0+cu121
-torchaudio==2.7.0+cu121
+torch==2.7.0
+torchaudio==2.7.0
+
+--- Core ML & TTS Model Libraries ---
+Pinned to specific versions for model stability.
 transformers==4.46.3
 diffusers==0.29.0
-resemble-perth==1.0.1
-openai-whisper
+openai-whisper==20240930
+s3tokenizer==0.1.7
+omegaconf==2.3.0
+einops==0.8.1
+conformer==0.3.2
 
-# --- GUI Libraries ---
+--- Audio & Signal Processing ---
+librosa==0.10.0
+pydub==0.25.1
+scipy==1.15.3
+resemble-perth==1.0.1
+
+--- GUI Libraries ---
 customtkinter==5.2.2
 CTkToolTip==0.8
 CTkMessagebox==2.7
 pygame==2.6.1
 
-# --- Text & File Processing ---
+--- Text & File Processing ---
 sentence-splitter==1.4
-pydub==0.25.1
-# For PDF support
 pdftextract==0.0.5
-# For ePub support
 EbookLib==0.18
 beautifulsoup4==4.12.3
-# For DOCX/MOBI support (also requires system installation of Pandoc)
+
+pypandoc also requires a system installation of Pandoc for .docx/.mobi support
 pypandoc==1.13
 
-# --- Post-Processing (Optional but Recommended) ---
-# For audio normalization
+--- Post-Processing Tools ---
+ffmpeg-python requires a system installation of FFmpeg
 ffmpeg-python==0.2.0
 
-# NOTE: The 'chatterbox' library itself is not listed here
-# as it is expected to be present as a source folder in the project directory.
-# This requirements file handles all its dependencies.
+auto-editor is used for silence removal
+auto-editor==27.1.1

@@ -49,15 +49,11 @@ def get_similarity_ratio(text1, text2):
     if not norm1 or not norm2: return 0.0
     return difflib.SequenceMatcher(None, norm1, norm2).ratio()
 
-def fuzzy_match(text1, text2, threshold=0.85):
-    return get_similarity_ratio(text1, text2) >= threshold
-
 def worker_process_chunk(task_bundle):
     """The main function executed by each worker process to generate a single audio chunk."""
-    # MODIFIED: Accept uuid
     (task_index, original_index, sentence_number, text_chunk, device_str, master_seed, ref_audio_path,
      exaggeration, temperature, cfg_weight, disable_watermark, num_candidates, max_attempts,
-     bypass_asr, session_name, run_idx, output_dir_str, uuid) = task_bundle
+     bypass_asr, session_name, run_idx, output_dir_str, uuid, asr_threshold) = task_bundle
 
     pid = os.getpid()
     logging.info(f"[Worker-{pid}] Starting chunk (Idx: {original_index}, #: {sentence_number}, UUID: {uuid[:8]}) on device {device_str}")
@@ -67,40 +63,36 @@ def worker_process_chunk(task_bundle):
         if tts_model is None or whisper_model is None:
             raise RuntimeError(f"Model initialization failed for device {device_str}")
     except Exception as e_model_load:
-        return {"original_index": original_index, "status": "error", "error_message": f"Model Load Fail: {e_model_load}", "path": None}
+        return {"original_index": original_index, "status": "error", "error_message": f"Model Load Fail: {e_model_load}"}
 
     run_temp_dir = Path(output_dir_str) / session_name / f"run_{run_idx+1}_temp"
     run_temp_dir.mkdir(exist_ok=True, parents=True)
     
-    # MODIFIED: Use UUID for temporary file names for robustness
     base_candidate_path_prefix = run_temp_dir / f"c_{uuid}_cand"
 
     try:
         tts_model.prepare_conditionals(ref_audio_path, exaggeration=min(exaggeration, 1.0), use_cache=True)
     except Exception as e:
         logging.error(f"[Worker-{pid}] Failed to prepare conditionals for chunk {sentence_number}: {e}", exc_info=True)
-        return {"original_index": original_index, "status": "error", "error_message": f"Conditional Prep Fail: {e}", "path": None}
+        return {"original_index": original_index, "status": "error", "error_message": f"Conditional Prep Fail: {e}"}
 
     passed_candidates = []
-    best_failed_candidate = {'ratio': -1.0, 'path': None, 'duration': 0, 'seed': 0}
-    all_temp_files = []
+    best_failed_candidate = None
     
-    if master_seed != 0:
-        base_seed_for_chunk = master_seed + original_index
-    else:
-        base_seed_for_chunk = 0 
-
     for attempt_num in range(max_attempts):
-        if base_seed_for_chunk != 0:
-            seed = base_seed_for_chunk + attempt_num
+        if len(passed_candidates) >= num_candidates:
+            logging.info(f"Met required number of candidates ({num_candidates}). Stopping early.")
+            break
+
+        if master_seed != 0:
+            seed = master_seed + attempt_num
         else:
             seed = random.randint(1, 2**32 - 1)
         
         logging.info(f"[Worker-{pid}] Chunk #{sentence_number}, Attempt {attempt_num + 1}/{max_attempts} with seed {seed}")
         set_seed(seed)
         
-        path_str = str(base_candidate_path_prefix) + f"_{attempt_num+1}_seed{seed}.wav"
-        all_temp_files.append(path_str)
+        temp_path_str = str(base_candidate_path_prefix) + f"_{attempt_num+1}_seed{seed}.wav"
 
         try:
             wav_tensor = tts_model.generate(text_chunk, cfg_weight=cfg_weight, temperature=temperature, apply_watermark=not disable_watermark)
@@ -108,62 +100,84 @@ def worker_process_chunk(task_bundle):
                 logging.warning(f"Generation failed (empty audio) for chunk #{sentence_number}, attempt {attempt_num+1}.")
                 continue
             
-            torchaudio.save(path_str, wav_tensor.cpu(), tts_model.sr)
+            torchaudio.save(temp_path_str, wav_tensor.cpu(), tts_model.sr)
             duration = wav_tensor.shape[-1] / tts_model.sr
             
         except Exception as e:
             logging.error(f"Generation crashed for chunk #{sentence_number}, attempt {attempt_num+1}: {e}", exc_info=True)
+            if Path(temp_path_str).exists(): os.remove(temp_path_str) # Clean up partial file
             continue
 
-        current_candidate_data = {"path": path_str, "duration": duration, "seed": seed}
+        current_candidate_data = {"path": temp_path_str, "duration": duration, "seed": seed}
 
-        is_passed = False
         if bypass_asr:
-            is_passed = True
-            logging.info(f"ASR bypassed for chunk #{sentence_number}, attempt {attempt_num+1}")
-        else:
-            try:
-                transcribed = whisper_model.transcribe(path_str, fp16=(whisper_model.device.type == 'cuda'))['text']
-                ratio = get_similarity_ratio(text_chunk, transcribed)
-                
-                if ratio >= 0.85:
-                    is_passed = True
-                    logging.info(f"ASR PASSED for chunk #{sentence_number}, attempt {attempt_num+1} (Sim: {ratio:.2f})")
-                else:
-                    logging.warning(f"ASR FAILED for chunk #{sentence_number}, attempt {attempt_num+1} (Sim: {ratio:.2f})")
-                    if ratio > best_failed_candidate['ratio']:
-                        best_failed_candidate = {**current_candidate_data, 'ratio': ratio}
-            except Exception as e:
-                logging.error(f"Whisper transcription failed for {path_str}: {e}")
-
-        if is_passed:
+            current_candidate_data['similarity_ratio'] = None 
             passed_candidates.append(current_candidate_data)
-            if len(passed_candidates) >= num_candidates:
-                logging.info(f"Met required number of candidates ({num_candidates}). Stopping early.")
-                break
+            logging.info(f"ASR bypassed for chunk #{sentence_number}, attempt {attempt_num+1}")
+            continue
 
-    # MODIFIED: Use UUID for final file path
+        # --- ASR Validation Logic ---
+        ratio = 0.0
+        try:
+            transcribed = whisper_model.transcribe(temp_path_str, fp16=(whisper_model.device.type == 'cuda'))['text']
+            ratio = get_similarity_ratio(text_chunk, transcribed)
+        except Exception as e:
+            logging.error(f"Whisper transcription failed for {temp_path_str}: {e}")
+
+        current_candidate_data['similarity_ratio'] = ratio
+        
+        if ratio >= asr_threshold:
+            logging.info(f"ASR PASSED for chunk #{sentence_number}, attempt {attempt_num+1} (Sim: {ratio:.2f})")
+            passed_candidates.append(current_candidate_data)
+        else:
+            logging.warning(f"ASR FAILED for chunk #{sentence_number}, attempt {attempt_num+1} (Sim: {ratio:.2f})")
+            # FIX: Simplified logic to robustly track the best failure
+            if best_failed_candidate is None or ratio > best_failed_candidate['similarity_ratio']:
+                # If there was a previous best failure, delete its audio file
+                if best_failed_candidate and Path(best_failed_candidate['path']).exists():
+                    os.remove(best_failed_candidate['path'])
+                best_failed_candidate = current_candidate_data
+            else:
+                # This attempt is worse than our stored best failure, so delete its audio
+                os.remove(temp_path_str)
+
+    # --- Final Selection Logic ---
     final_wav_path = Path(output_dir_str) / session_name / "Sentence_wavs" / f"audio_{uuid}.wav"
     final_wav_path.parent.mkdir(exist_ok=True, parents=True)
     
     chosen_candidate = None
     status = "error"
-    
+    return_payload = {"original_index": original_index}
+
     if passed_candidates:
         chosen_candidate = sorted(passed_candidates, key=lambda x: x["duration"])[0]
         status = "success"
-    elif best_failed_candidate['path'] is not None:
-        logging.warning(f"No candidates passed. Using best failure (Sim: {best_failed_candidate['ratio']:.2f}) as placeholder.")
+    elif best_failed_candidate:
+        ratio_str = f"{best_failed_candidate.get('similarity_ratio', 0.0):.2f}"
+        logging.warning(f"No candidates passed. Using best failure (Sim: {ratio_str}) as placeholder.")
         chosen_candidate = best_failed_candidate
         status = "failed_placeholder"
     
+    # --- Finalize and Cleanup ---
     if chosen_candidate:
-        shutil.move(chosen_candidate['path'], final_wav_path)
-        for temp_file in all_temp_files:
-            if temp_file != chosen_candidate['path'] and Path(temp_file).exists():
-                os.remove(temp_file)
+        # Move the chosen file to the final destination
+        if Path(chosen_candidate['path']).exists():
+            shutil.move(chosen_candidate['path'], final_wav_path)
         
+        # Clean up any other temporary candidate files that might still exist
+        # This is for passed candidates that were not the shortest
+        for cand in passed_candidates:
+            if cand['path'] != chosen_candidate['path'] and Path(cand['path']).exists():
+                os.remove(cand['path'])
+
+        return_payload.update({
+            "status": status,
+            "path": str(final_wav_path),
+            "seed": chosen_candidate.get('seed'),
+            "similarity_ratio": chosen_candidate.get('similarity_ratio')
+        })
         logging.info(f"Chunk #{sentence_number} (Status: {status}) processed. Final audio: {final_wav_path.name}")
-        return {"original_index": original_index, "status": status, "path": str(final_wav_path)}
     else:
-        return {"original_index": original_index, "status": "error", "error_message": "All generation attempts failed to produce audio.", "path": None}
+        return_payload.update({"status": "error", "error_message": "All generation attempts failed."})
+
+    return return_payload
